@@ -151,30 +151,77 @@ app.post('/api/search', rateLimit(30, 60 * 1000), async (req, res) => {
   } catch (error) { res.status(error.status || 502).json({ error: error.message || 'Could not search YouTube right now.' }); }
 });
 
-app.post('/api/youtube-download', async (req, res) => {
-  const videoId = String(req.body?.videoId || ''); const format = String(req.body?.format || '').toLowerCase();
-  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return res.status(400).json({ error: 'Invalid YouTube video ID.' });
-  if (!['mp3','mp4'].includes(format)) return res.status(400).json({ error: 'Choose MP3 or MP4 output.' });
-  if (!TOOL_STATUS.ytDlp || !TOOL_STATUS.ffmpeg) return res.status(503).json({ error: 'The download backend requires yt-dlp and FFmpeg.' });
-  const workDir = path.join(YOUTUBE_TEMP, crypto.randomUUID()); let finalPath;
+app.post('/api/youtube-download', rateLimit(4, 60 * 1000), async (req, res) => {
+  const videoId = String(req.body?.videoId || '');
+  const format = String(req.body?.format || '').toLowerCase();
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) {
+    return res.status(400).json({ error: 'Invalid YouTube video ID.' });
+  }
+  if (!['mp3', 'mp4'].includes(format)) {
+    return res.status(400).json({ error: 'Choose MP3 or MP4 output.' });
+  }
+  if (!TOOL_STATUS.ytDlp || !TOOL_STATUS.ffmpeg) {
+    return res.status(503).json({ error: 'The download backend requires yt-dlp and FFmpeg.' });
+  }
+
+  // Resolution is only applied to MP4 video downloads. If the source does not
+  // offer the selected resolution, yt-dlp chooses the best available lower one.
+  const allowedQualities = { '360p': 360, '480p': 480, '720p': 720, '1080p': 1080, '4K': 2160 };
+  const quality = format === 'mp4' ? String(req.body?.quality || '720p') : '';
+  if (format === 'mp4' && !Object.hasOwn(allowedQualities, quality)) {
+    return res.status(400).json({ error: 'Choose a supported video quality: 360p, 480p, 720p, 1080p, or 4K.' });
+  }
+
+  const workDir = path.join(YOUTUBE_TEMP, crypto.randomUUID());
+  let finalPath;
   try {
     await fsp.mkdir(workDir, { recursive: true, mode: 0o700 });
-    const info = await getVideoInfo(videoId).catch(() => ({})); const outputTemplate = path.join(workDir, '%(id)s.%(ext)s');
-    const quality = String(req.body?.audioQuality || '192K'); const safeQuality = ['128K','192K','256K','320K'].includes(quality) ? quality : '192K';
+    const info = await getVideoInfo(videoId).catch(() => ({}));
+    const outputTemplate = path.join(workDir, '%(id)s.%(ext)s');
+    const audioQuality = String(req.body?.audioQuality || '192K');
+    const safeAudioQuality = ['128K', '192K', '256K', '320K'].includes(audioQuality) ? audioQuality : '192K';
     const formatArgs = format === 'mp3'
-      ? ['--format','bestaudio/best','--extract-audio','--audio-format','mp3','--audio-quality',safeQuality]
-      : ['--format','bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b','--merge-output-format','mp4'];
-    await run('yt-dlp',['--no-playlist','--no-progress','--no-warnings','--no-call-home','--output',outputTemplate,...formatArgs,`https://www.youtube.com/watch?v=${videoId}`],60*60*1000);
-    const outputFile = (await fsp.readdir(workDir)).find(name => name.toLowerCase().endsWith(`.${format}`) && !name.endsWith('.part'));
+      ? ['--format', 'bestaudio/best', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', safeAudioQuality]
+      : [
+          '--format',
+          `bv*[height<=${allowedQualities[quality]}][ext=mp4]+ba[ext=m4a]/b[height<=${allowedQualities[quality]}][ext=mp4]/bv*[height<=${allowedQualities[quality]}]+ba/b[height<=${allowedQualities[quality]}]`,
+          '--merge-output-format', 'mp4',
+          '--recode-video', 'mp4'
+        ];
+
+    await run('yt-dlp', [
+      '--no-playlist', '--no-progress', '--no-warnings', '--no-call-home',
+      '--output', outputTemplate, ...formatArgs,
+      `https://www.youtube.com/watch?v=${videoId}`
+    ], 60 * 60 * 1000);
+
+    const outputFile = (await fsp.readdir(workDir)).find(name =>
+      name.toLowerCase().endsWith(`.${format}`) && !name.endsWith('.part')
+    );
     if (!outputFile) throw new Error('Expected output file was not created.');
-    const sourcePath = path.join(workDir,outputFile);
-    const savedId = crypto.randomUUID(); finalPath = path.join(OUTPUT,`${savedId}.${format}`); await fsp.rename(sourcePath,finalPath);
-    const baseName = (info.title || `Jaduloader_${videoId}`).replace(/[^\p{L}\p{N}._ -]+/gu,'').trim().replace(/\s+/g,'_').slice(0,70) || `Jaduloader_${videoId}`;
-    const filename = `${baseName}.${format}`;
-    const cleanup = setTimeout(async () => { savedOutputs.delete(savedId); await fsp.unlink(finalPath).catch(() => {}); },FILE_TTL_MS); cleanup.unref();
-    savedOutputs.set(savedId,{path:finalPath,name:filename}); res.json({downloadUrl:`/api/download/${savedId}`,filename,expiresInMinutes:60});
-  } catch (error) { if (finalPath) await fsp.unlink(finalPath).catch(() => {}); const mapped=mediaError(error); res.status(mapped.status).json({error:mapped.message}); }
-  finally { await fsp.rm(workDir,{recursive:true,force:true}).catch(() => {}); }
+    const sourcePath = path.join(workDir, outputFile);
+    const savedId = crypto.randomUUID();
+    finalPath = path.join(OUTPUT, `${savedId}.${format}`);
+    await fsp.rename(sourcePath, finalPath);
+
+    const baseName = (info.title || `Jaduloader_${videoId}`)
+      .replace(/[^\p{L}\p{N}._ -]+/gu, '').trim().replace(/\s+/g, '_').slice(0, 70)
+      || `Jaduloader_${videoId}`;
+    const filename = `${baseName}${format === 'mp4' ? `_${quality}` : ''}.${format}`;
+    const cleanup = setTimeout(async () => {
+      savedOutputs.delete(savedId);
+      await fsp.unlink(finalPath).catch(() => {});
+    }, FILE_TTL_MS);
+    cleanup.unref();
+    savedOutputs.set(savedId, { path: finalPath, name: filename });
+    res.json({ downloadUrl: `/api/download/${savedId}`, filename, quality: quality || undefined, expiresInMinutes: 60 });
+  } catch (error) {
+    if (finalPath) await fsp.unlink(finalPath).catch(() => {});
+    const mapped = mediaError(error);
+    res.status(mapped.status).json({ error: mapped.message });
+  } finally {
+    await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
 });
 
 const storage = multer.diskStorage({

@@ -470,8 +470,32 @@ Object.assign(window.JADULOADER_I18N.strings.hi, {"dl_k": "कृपया प�
       frame.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share'; frame.referrerPolicy = 'strict-origin-when-cross-origin'; frame.allowFullscreen = true;
       thumb.replaceChildren(frame); play.dataset.i18n = 'playing'; play.textContent = t('playing'); play.disabled = true;
     });
-    const mkBtn = format => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn real-download'; b.textContent = format.toUpperCase(); b.disabled = !validId; b.addEventListener('click', () => startDownload(item, format, b)); return b; };
-    actions.append(play, mkBtn('mp3'), mkBtn('mp4')); info.append(title, meta, actions); article.append(thumb, info); return article;
+    const mkBtn = (format, onClick) => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'btn real-download';
+      b.textContent = format.toUpperCase(); b.disabled = !validId; b.addEventListener('click', onClick); return b;
+    };
+    const mp3Button = mkBtn('mp3', event => startDownload(item, 'mp3', event.currentTarget));
+    const mp4Button = mkBtn('mp4', () => { qualityMenu.style.display = qualityMenu.style.display === 'none' ? 'grid' : 'none'; });
+    const qualityMenu = document.createElement('div');
+    qualityMenu.className = 'quality-menu';
+    Object.assign(qualityMenu.style, {
+      position: 'absolute', right: '0', bottom: 'calc(100% + 8px)', zIndex: '20',
+      display: 'grid', gridTemplateColumns: 'repeat(2, minmax(78px, 1fr))', gap: '6px',
+      padding: '10px', border: '1px solid var(--border, #444)', borderRadius: '12px',
+      background: 'var(--panel, #171717)', boxShadow: '0 8px 24px rgba(0,0,0,.25)', minWidth: '180px'
+    });
+    qualityMenu.style.display = 'none';
+    for (const quality of ['360p', '480p', '720p', '1080p', '4K']) {
+      const option = document.createElement('button'); option.type = 'button'; option.className = 'btn quality-option';
+      option.textContent = quality; option.addEventListener('click', () => {
+        qualityMenu.style.display = 'none';
+        startDownload(item, 'mp4', mp4Button, quality);
+      });
+      qualityMenu.append(option);
+    }
+    actions.style.position = 'relative';
+    actions.append(play, mp3Button, mp4Button, qualityMenu);
+    info.append(title, meta, actions); article.append(thumb, info); return article;
   }
   async function search(query) {
     const button = $('searchBtn'); button.disabled = true; button.classList.add('loading'); button.querySelector('span').textContent = t('searching');
@@ -487,7 +511,7 @@ Object.assign(window.JADULOADER_I18N.strings.hi, {"dl_k": "कृपया प�
   }
   function fmtTime(sec) { return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`; }
   function stopDlTimer() { clearInterval(dlTimer); dlTimer = null; }
-  async function startDownload(item, format, button) {
+  async function startDownload(item, format, button, quality = '') {
     const dialog = $('downloadDialog'); const started = Date.now();
     $('dlHeading').textContent = t('dl_title'); $('dlMsg').textContent = t('dl_msg'); $('dlVideoTitle').textContent = item.title || t('dlg_fallback');
     $('dlTimer').textContent = '00:00'; $('dlClose').hidden = true; dialog.classList.remove('error', 'done');
@@ -495,10 +519,12 @@ Object.assign(window.JADULOADER_I18N.strings.hi, {"dl_k": "कृपया प�
     stopDlTimer(); dlTimer = setInterval(() => { $('dlTimer').textContent = fmtTime(Math.floor((Date.now() - started) / 1000)); }, 250);
     const original = button.textContent; button.disabled = true; button.textContent = t('preparing');
     try {
-      const data = await jsonRequest('/api/youtube-download', { videoId: item.videoId, format });
+      const payload = { videoId: item.videoId, format };
+      if (format === 'mp4') payload.quality = quality || '720p';
+      const data = await jsonRequest('/api/youtube-download', payload);
       if (!data.downloadUrl) throw new Error(t('err_no_url'));
       const link = document.createElement('a'); link.href = absoluteUrl(data.downloadUrl); link.download = data.filename || `Jaduloader.${format}`; link.rel = 'noopener'; document.body.append(link); link.click(); link.remove();
-      saveHistory({ title: item.title || t('yt_video'), videoId: item.videoId, format, filename: data.filename });
+      saveHistory({ title: item.title || t('yt_video'), videoId: item.videoId, format, quality: quality || undefined, filename: data.filename });
       stopDlTimer(); dialog.classList.add('done'); $('dlHeading').textContent = t('dl_done'); $('dlMsg').textContent = t('dl_done_msg');
       setTimeout(() => { if (dialog.open && dialog.classList.contains('done')) dialog.close(); }, 3000);
     } catch (error) {
