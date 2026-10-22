@@ -8,6 +8,27 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 
+// --- Vercel: make bundled yt-dlp / ffmpeg / ffprobe (./bin) runnable and put them on PATH ---
+if (process.env.VERCEL) {
+  const srcBin = path.join(__dirname, 'bin');
+  let useBin = srcBin;
+  try {
+    const first = fs.readdirSync(srcBin)[0];
+    try { fs.accessSync(path.join(srcBin, first), fs.constants.X_OK); }
+    catch { // /var/task is read-only: if exec bit was lost, copy to /tmp and chmod there
+      useBin = path.join(os.tmpdir(), 'bin');
+      fs.mkdirSync(useBin, { recursive: true });
+      for (const f of fs.readdirSync(srcBin)) {
+        const d = path.join(useBin, f);
+        if (!fs.existsSync(d)) { fs.copyFileSync(path.join(srcBin, f), d); fs.chmodSync(d, 0o755); }
+      }
+    }
+  } catch (e) { console.error('bin setup failed:', e.message); }
+  process.env.PATH = `${useBin}${path.delimiter}${process.env.PATH}`;
+  process.env.HOME = os.tmpdir();            // yt-dlp needs a writable home/cache
+  process.env.XDG_CACHE_HOME = os.tmpdir();
+}
+
 const app = express();
 app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
@@ -184,9 +205,9 @@ app.post('/api/youtube-download', rateLimit(4, 60 * 1000), async (req, res) => {
       ? ['--format', 'bestaudio/best', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', safeAudioQuality]
       : [
           '--format',
-          `bv*[height<=${allowedQualities[quality]}][ext=mp4]+ba[ext=m4a]/b[height<=${allowedQualities[quality]}][ext=mp4]/bv*[height<=${allowedQualities[quality]}]+ba/b[height<=${allowedQualities[quality]}]`,
+          `bv*[vcodec^=avc1][height<=${allowedQualities[quality]}]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=${allowedQualities[quality]}]/bv*[height<=${allowedQualities[quality]}]+ba/b[height<=${allowedQualities[quality]}]`,
           '--merge-output-format', 'mp4',
-          '--recode-video', 'mp4'
+          '--concurrent-fragments', '4'
         ];
 
     await run('yt-dlp', [
