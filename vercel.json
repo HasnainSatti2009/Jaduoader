@@ -1,6 +1,7 @@
 {
   "version": 2,
-  "installCommand": "npm install && mkdir -p bin && curl -fL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o bin/yt-dlp && cp node_modules/ffmpeg-static/ffmpeg bin/ffmpeg && cp node_modules/ffprobe-static/bin/linux/x64/ffprobe bin/ffprobe && chmod +x bin/*",
+  "framework": null,
+  "installCommand": "npm install && sh scripts/install-bins.sh",
   "outputDirectory": "public",
   "functions": {
     "api/index.js": {
