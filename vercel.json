@@ -1,7 +1,7 @@
 {
   "version": 2,
   "framework": null,
-  "installCommand": "npm install && sh scripts/install-bins.sh",
+  "installCommand": "npm install && sh install-bins.sh",
   "outputDirectory": "public",
   "functions": {
     "api/index.js": {
