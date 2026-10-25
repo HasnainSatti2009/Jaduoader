@@ -8,6 +8,27 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 
+// --- Vercel: make bundled yt-dlp / ffmpeg / ffprobe (./bin) runnable and put them on PATH ---
+if (process.env.VERCEL) {
+  const srcBin = path.join(__dirname, 'bin');
+  let useBin = srcBin;
+  try {
+    const first = fs.readdirSync(srcBin)[0];
+    try { fs.accessSync(path.join(srcBin, first), fs.constants.X_OK); }
+    catch { // /var/task is read-only: if exec bit was lost, copy to /tmp and chmod there
+      useBin = path.join(os.tmpdir(), 'bin');
+      fs.mkdirSync(useBin, { recursive: true });
+      for (const f of fs.readdirSync(srcBin)) {
+        const d = path.join(useBin, f);
+        if (!fs.existsSync(d)) { fs.copyFileSync(path.join(srcBin, f), d); fs.chmodSync(d, 0o755); }
+      }
+    }
+  } catch (e) { console.error('bin setup failed:', e.message); }
+  process.env.PATH = `${useBin}${path.delimiter}${process.env.PATH}`;
+  process.env.HOME = os.tmpdir();            // yt-dlp needs a writable home/cache
+  process.env.XDG_CACHE_HOME = os.tmpdir();
+}
+
 const app = express();
 app.set('trust proxy', 1);
 const PORT = Number(process.env.PORT || 3000);
@@ -125,11 +146,23 @@ function mediaError(error) {
 }
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
-app.get('/api/status', (_req, res) => res.json({
-  youtubeSearchConfigured: Boolean(YOUTUBE_API_KEY),
-  youtubeDownloadsConfigured: TOOL_STATUS.ytDlp && TOOL_STATUS.ffmpeg,
-  converterConfigured: TOOL_STATUS.ffmpeg && TOOL_STATUS.ffprobe
-}));
+app.get('/api/status', (req, res) => {
+  const out = {
+    youtubeSearchConfigured: Boolean(YOUTUBE_API_KEY),
+    youtubeDownloadsConfigured: TOOL_STATUS.ytDlp && TOOL_STATUS.ffmpeg,
+    converterConfigured: TOOL_STATUS.ffmpeg && TOOL_STATUS.ffprobe
+  };
+  if (req.query.debug === '1') { // diagnostics: /api/status?debug=1
+    const ls = d => { try { return fs.readdirSync(d); } catch (e) { return `ERR ${e.code || e.message}`; } };
+    const probe = (cmd, arg) => { const r = spawnSync(cmd, [arg], { encoding: 'utf8' }); return { status: r.status, error: r.error ? (r.error.code || r.error.message) : null, stderr: String(r.stderr || '').slice(0, 200) }; };
+    out.debug = {
+      dirname: __dirname, binDir: ls(path.join(__dirname, 'bin')), tmpBin: ls(path.join(os.tmpdir(), 'bin')),
+      root: ls(__dirname), path: process.env.PATH,
+      ytDlp: probe('yt-dlp', '--version'), ffmpeg: probe('ffmpeg', '-version'), ffprobe: probe('ffprobe', '-version')
+    };
+  }
+  res.json(out);
+});
 
 app.post('/api/search', rateLimit(30, 60 * 1000), async (req, res) => {
   const query = String(req.body?.query || '').trim().slice(0, 160);
