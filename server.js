@@ -184,9 +184,9 @@ app.post('/api/youtube-download', rateLimit(4, 60 * 1000), async (req, res) => {
       ? ['--format', 'bestaudio/best', '--extract-audio', '--audio-format', 'mp3', '--audio-quality', safeAudioQuality]
       : [
           '--format',
-          `bv*[height<=${allowedQualities[quality]}][ext=mp4]+ba[ext=m4a]/b[height<=${allowedQualities[quality]}][ext=mp4]/bv*[height<=${allowedQualities[quality]}]+ba/b[height<=${allowedQualities[quality]}]`,
+          `bv*[vcodec^=avc1][height<=${allowedQualities[quality]}]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=${allowedQualities[quality]}]/bv*[height<=${allowedQualities[quality]}]+ba/b[height<=${allowedQualities[quality]}]`,
           '--merge-output-format', 'mp4',
-          '--recode-video', 'mp4'
+          '--concurrent-fragments', '4'
         ];
 
     await run('yt-dlp', [
